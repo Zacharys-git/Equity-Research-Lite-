@@ -61,6 +61,71 @@ def df_to_records(df):
     return out
 
 
+def _latest_value(records, *candidate_keys):
+    """Find the most recent non-null value for any of the given line-item names."""
+    if not records:
+        return None
+    for r in records:
+        for k in candidate_keys:
+            v = r.get(k)
+            if v is not None:
+                return v
+    return None
+
+
+def compute_ratios(income_records, balance_records, cashflow_records, price, shares_out, market_cap):
+    """Compute fundamental ratios from financial statements when yfinance .info is rate-limited."""
+    revenue = _latest_value(income_records, "Total Revenue", "TotalRevenue", "Revenue")
+    gross_profit = _latest_value(income_records, "Gross Profit", "GrossProfit")
+    op_income = _latest_value(income_records, "Operating Income", "OperatingIncome")
+    net_income = _latest_value(income_records, "Net Income", "Net Income Common Stockholders", "Net Income From Continuing Operation Net Minority Interest")
+    ebitda = _latest_value(income_records, "EBITDA", "Normalized EBITDA")
+
+    total_assets = _latest_value(balance_records, "Total Assets", "TotalAssets")
+    stockholders_equity = _latest_value(balance_records, "Stockholders Equity", "Common Stock Equity", "Total Equity Gross Minority Interest")
+    total_debt = _latest_value(balance_records, "Total Debt", "TotalDebt", "Long Term Debt")
+    cash = _latest_value(balance_records, "Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments", "Cash And Short Term Investments")
+    current_assets = _latest_value(balance_records, "Current Assets", "CurrentAssets")
+    current_liab = _latest_value(balance_records, "Current Liabilities", "CurrentLiabilities")
+    inventory = _latest_value(balance_records, "Inventory")
+
+    def safe_div(a, b):
+        if a is None or b is None or b == 0:
+            return None
+        return a / b
+
+    eps = safe_div(net_income, shares_out)
+    book_value = safe_div(stockholders_equity, shares_out)
+
+    enterprise_value = None
+    if market_cap is not None:
+        enterprise_value = market_cap + (total_debt or 0) - (cash or 0)
+
+    return {
+        "trailingPE": safe_div(price, eps),
+        "forwardPE": None,  # needs analyst estimates
+        "pegRatio": None,
+        "priceToBook": safe_div(price, book_value),
+        "priceToSales": safe_div(market_cap, revenue),
+        "enterpriseValue": enterprise_value,
+        "evToRevenue": safe_div(enterprise_value, revenue),
+        "evToEbitda": safe_div(enterprise_value, ebitda),
+        "grossMargin": safe_div(gross_profit, revenue),
+        "operatingMargin": safe_div(op_income, revenue),
+        "profitMargin": safe_div(net_income, revenue),
+        "returnOnAssets": safe_div(net_income, total_assets),
+        "returnOnEquity": safe_div(net_income, stockholders_equity),
+        "debtToEquity": safe_div(total_debt, stockholders_equity),
+        "currentRatio": safe_div(current_assets, current_liab),
+        "quickRatio": safe_div((current_assets or 0) - (inventory or 0), current_liab) if current_assets is not None and current_liab else None,
+        "dividendYield": None,
+        "payoutRatio": None,
+        "beta": None,
+        "eps": eps,
+        "bookValue": book_value,
+    }
+
+
 # ---------- routes ----------
 
 @app.route("/")
@@ -139,6 +204,42 @@ def snapshot(ticker):
             info["currentPrice"] = history[-1].get("close")
         if history and info.get("previousClose") is None and len(history) > 1:
             info["previousClose"] = history[-2].get("close")
+
+        # Compute ratios from financial statements when info() is rate-limited.
+        # Only fire if at least some core ratio is missing (avoid extra fetches when info works).
+        needs_compute = any(info.get(k) is None for k in [
+            "trailingPE", "priceToBook", "priceToSalesTrailing12Months",
+            "trailingEps", "returnOnEquity", "profitMargins"
+        ])
+        if needs_compute:
+            try:
+                income_recs = df_to_records(t.financials)
+                balance_recs = df_to_records(t.balance_sheet)
+                cashflow_recs = df_to_records(t.cashflow)
+                computed = compute_ratios(
+                    income_recs, balance_recs, cashflow_recs,
+                    info.get("currentPrice"),
+                    info.get("sharesOutstanding"),
+                    info.get("marketCap"),
+                )
+                # Only use computed values where info() didn't supply one.
+                key_map = {
+                    "trailingPE": "trailingPE",
+                    "priceToBook": "priceToBook",
+                    "priceToSalesTrailing12Months": "priceToSales",
+                    "trailingEps": "eps",
+                    "returnOnEquity": "returnOnEquity",
+                    "returnOnAssets": "returnOnAssets",
+                    "profitMargins": "profitMargin",
+                    "operatingMargins": "operatingMargin",
+                    "grossMargins": "grossMargin",
+                    "debtToEquity": "debtToEquity",
+                }
+                for info_key, computed_key in key_map.items():
+                    if info.get(info_key) is None and computed.get(computed_key) is not None:
+                        info[info_key] = computed[computed_key]
+            except Exception as e:
+                warnings.append(f"compute_ratios: {e}")
 
         keys = [
             "longName", "shortName", "symbol", "sector", "industry", "exchange",
@@ -240,37 +341,64 @@ def financials(ticker):
         except Exception:
             info = {}
 
-        # Build a small ratio block from yfinance info (most recent TTM-ish values).
+        # Try fast_info for price + market cap (less rate-limited)
+        try:
+            fi = t.fast_info
+            fast_price = getattr(fi, "last_price", None) if fi is not None else None
+            fast_mcap = getattr(fi, "market_cap", None) if fi is not None else None
+            fast_shares = getattr(fi, "shares", None) if fi is not None else None
+        except Exception:
+            fast_price = fast_mcap = fast_shares = None
+
+        # Build ratio block, preferring info() values, falling back to computed
+        income_records = df_to_records(inc)
+        balance_records = df_to_records(bs)
+        cashflow_records = df_to_records(cf)
+
+        price = safe_num(info.get("currentPrice")) or fast_price
+        market_cap = safe_num(info.get("marketCap")) or fast_mcap
+        shares_out = safe_num(info.get("sharesOutstanding")) or fast_shares
+
+        computed = compute_ratios(income_records, balance_records, cashflow_records,
+                                  price, shares_out, market_cap)
+
+        def pick(info_key, computed_key=None):
+            ck = computed_key or info_key
+            v = safe_num(info.get(info_key))
+            if v is not None:
+                return v
+            return computed.get(ck)
+
         ratios = {
-            "trailingPE": safe_num(info.get("trailingPE")),
-            "forwardPE": safe_num(info.get("forwardPE")),
-            "priceToBook": safe_num(info.get("priceToBook")),
-            "priceToSales": safe_num(info.get("priceToSalesTrailing12Months")),
-            "pegRatio": safe_num(info.get("pegRatio")),
-            "enterpriseValue": safe_num(info.get("enterpriseValue")),
-            "evToRevenue": safe_num(info.get("enterpriseToRevenue")),
-            "evToEbitda": safe_num(info.get("enterpriseToEbitda")),
-            "grossMargin": safe_num(info.get("grossMargins")),
-            "operatingMargin": safe_num(info.get("operatingMargins")),
-            "profitMargin": safe_num(info.get("profitMargins")),
-            "returnOnAssets": safe_num(info.get("returnOnAssets")),
-            "returnOnEquity": safe_num(info.get("returnOnEquity")),
-            "debtToEquity": safe_num(info.get("debtToEquity")),
-            "currentRatio": safe_num(info.get("currentRatio")),
-            "quickRatio": safe_num(info.get("quickRatio")),
-            "dividendYield": safe_num(info.get("dividendYield")),
-            "payoutRatio": safe_num(info.get("payoutRatio")),
-            "beta": safe_num(info.get("beta")),
-            "eps": safe_num(info.get("trailingEps")),
-            "bookValue": safe_num(info.get("bookValue")),
+            "trailingPE": pick("trailingPE"),
+            "forwardPE": pick("forwardPE"),
+            "priceToBook": pick("priceToBook"),
+            "priceToSales": pick("priceToSalesTrailing12Months", "priceToSales"),
+            "pegRatio": pick("pegRatio"),
+            "enterpriseValue": pick("enterpriseValue"),
+            "evToRevenue": pick("enterpriseToRevenue", "evToRevenue"),
+            "evToEbitda": pick("enterpriseToEbitda", "evToEbitda"),
+            "grossMargin": pick("grossMargins", "grossMargin"),
+            "operatingMargin": pick("operatingMargins", "operatingMargin"),
+            "profitMargin": pick("profitMargins", "profitMargin"),
+            "returnOnAssets": pick("returnOnAssets"),
+            "returnOnEquity": pick("returnOnEquity"),
+            "debtToEquity": pick("debtToEquity"),
+            "currentRatio": pick("currentRatio"),
+            "quickRatio": pick("quickRatio"),
+            "dividendYield": pick("dividendYield"),
+            "payoutRatio": pick("payoutRatio"),
+            "beta": pick("beta"),
+            "eps": pick("trailingEps", "eps"),
+            "bookValue": pick("bookValue"),
         }
 
         return jsonify({
             "ticker": ticker,
             "period": period,
-            "incomeStatement": df_to_records(inc),
-            "balanceSheet": df_to_records(bs),
-            "cashFlow": df_to_records(cf),
+            "incomeStatement": income_records,
+            "balanceSheet": balance_records,
+            "cashFlow": cashflow_records,
             "ratios": ratios,
         })
     except Exception as e:
