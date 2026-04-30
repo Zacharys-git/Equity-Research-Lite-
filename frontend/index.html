@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
+<title>Stock Research Lite</title>
+<link rel="stylesheet" href="style.css?v=9" />
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>Stock Research Lite</h1>
+  <div class="search">
+    <input id="ticker" type="text" placeholder="Ticker (e.g. AAPL)" autocomplete="off" />
+    <button id="go">Load</button>
+    <span id="status"></span>
+  </div>
+  <nav class="tabs">
+    <button class="tab active" data-tab="snapshot">Snapshot</button>
+    <button class="tab" data-tab="financials">Financials</button>
+    <button class="tab" data-tab="sectors">Sectors</button>
+    <button class="tab" data-tab="macro">Macro</button>
+  </nav>
+</header>
+
+<main>
+  <!-- SNAPSHOT TAB -->
+  <section id="tab-snapshot" class="tab-panel active">
+    <div class="snapshot-head">
+      <div>
+        <h2 id="snap-name">—</h2>
+        <p id="snap-meta" class="muted">—</p>
+      </div>
+      <div class="price-block">
+        <div id="snap-price" class="price">—</div>
+        <div id="snap-change" class="change">—</div>
+      </div>
+    </div>
+    <div class="card chart-card">
+      <div class="chart-controls">
+        <span class="ctrl-group">
+          <span class="muted" style="margin-right:6px">Range:</span>
+          <label><input type="radio" name="snap-range" value="3M" /> 3M</label>
+          <label><input type="radio" name="snap-range" value="6M" /> 6M</label>
+          <label><input type="radio" name="snap-range" value="1Y" /> 1Y</label>
+          <label><input type="radio" name="snap-range" value="2Y" checked /> 2Y</label>
+        </span>
+        <span class="ctrl-group">
+          <label><span class="legend-swatch" style="background:#3fb950"></span><input type="checkbox" class="sma-toggle" data-period="20" checked /> SMA 20</label>
+          <label><span class="legend-swatch" style="background:#d29922"></span><input type="checkbox" class="sma-toggle" data-period="50" checked /> SMA 50</label>
+          <label><span class="legend-swatch" style="background:#f85149"></span><input type="checkbox" class="sma-toggle" data-period="200" checked /> SMA 200</label>
+        </span>
+      </div>
+      <canvas id="snap-chart" height="120"></canvas>
+    </div>
+    <div class="grid stats" id="snap-stats"></div>
+    <div class="card">
+      <h3>About</h3>
+      <p id="snap-about" class="muted">—</p>
+    </div>
+  </section>
+
+  <!-- FINANCIALS TAB -->
+  <section id="tab-financials" class="tab-panel">
+    <div class="row controls">
+      <label><input type="radio" name="period" value="annual" checked /> Annual</label>
+      <label><input type="radio" name="period" value="quarterly" /> Quarterly</label>
+    </div>
+
+    <h3>Key Ratios</h3>
+    <div class="grid stats" id="fin-ratios"></div>
+
+    <h3>Income Statement</h3>
+    <div class="table-wrap"><table id="tbl-income"></table></div>
+
+    <h3>Balance Sheet</h3>
+    <div class="table-wrap"><table id="tbl-balance"></table></div>
+
+    <h3>Cash Flow</h3>
+    <div class="table-wrap"><table id="tbl-cashflow"></table></div>
+
+    <h3>Recent SEC Filings</h3>
+    <div class="table-wrap"><table id="tbl-filings"></table></div>
+  </section>
+
+  <!-- SECTORS TAB -->
+  <section id="tab-sectors" class="tab-panel">
+    <p class="muted">5-year total return by sector (SPDR sector ETFs vs SPY benchmark, weekly closes, dividend-adjusted).</p>
+
+    <h3>Total Return Ranking</h3>
+    <div class="card chart-card"><canvas id="sector-bar" height="120"></canvas></div>
+
+    <h3>Cumulative Growth (Indexed to 100)</h3>
+    <div class="card chart-card">
+      <div class="chart-controls" id="sector-toggles"></div>
+      <canvas id="sector-line" height="140"></canvas>
+    </div>
+
+    <h3>Per-Sector Detail</h3>
+    <div class="table-wrap"><table id="sector-table"></table></div>
+  </section>
+
+  <!-- MACRO TAB -->
+  <section id="tab-macro" class="tab-panel">
+    <p class="muted">Latest U.S. macro indicators from FRED.</p>
+
+    <h3>Key Indicators — Rates &amp; Inflation</h3>
+    <div class="card chart-card">
+      <div class="chart-controls">
+        <label><input type="radio" name="macro-chart" value="rates" checked /> Rates (Fed Funds, 2Y, 10Y)</label>
+        <label><input type="radio" name="macro-chart" value="inflation" /> Inflation (CPI YoY %, Core CPI YoY %)</label>
+        <label><input type="radio" name="macro-chart" value="growth" /> Growth (Unemployment, Industrial Prod.)</label>
+        <label><input type="radio" name="macro-chart" value="risk" /> Risk (VIX, 10Y-2Y Spread)</label>
+      </div>
+      <canvas id="macro-chart" height="120"></canvas>
+    </div>
+
+    <h3>All Indicators</h3>
+    <div class="grid macro-grid" id="macro-grid"></div>
+  </section>
+</main>
+
+<footer><span class="muted">Data: yfinance · SEC EDGAR · FRED</span></footer>
+<script src="app.js?v=9"></script>
+</body>
+</html>

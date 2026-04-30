@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+backend/venv/
+backend/.venv/
+
+# Per-developer overrides (the key is in .env.example so you don't NEED a .env;
+# this is here so anyone who edits their .env doesn't accidentally commit it).
+backend/.env
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.log
