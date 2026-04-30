@@ -5,8 +5,7 @@ const API_BASE = (() => {
   if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
     return "http://localhost:5001";
   }
-  // EDIT THIS LINE after deploying the backend on Render/Railway/etc.
-  return "https://YOUR-BACKEND-URL.onrender.com";
+  return "https://equity-research-lite.onrender.com";
 })();
 
 // ====== STATE ======
