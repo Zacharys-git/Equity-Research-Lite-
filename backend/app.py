@@ -22,6 +22,36 @@ except Exception:
 
 load_dotenv()
 
+# Simple in-memory cache for Yahoo info() responses (24h TTL).
+# Helps when Yahoo rate-limits some requests but not others — once we
+# successfully fetch the company description, we keep it.
+import time
+_INFO_CACHE = {}  # ticker -> (timestamp, info_dict)
+_INFO_TTL = 24 * 60 * 60  # 24 hours
+
+
+def get_cached_info(ticker, ticker_obj):
+    """Try to fetch t.info, fall back to cached value if rate-limited."""
+    now = time.time()
+    cached = _INFO_CACHE.get(ticker)
+    fresh = None
+    try:
+        fresh = ticker_obj.info or None
+    except Exception:
+        fresh = None
+
+    # If fetch returned a real, populated dict (not just empty/rate-limited), cache it
+    if fresh and any(fresh.get(k) for k in ("longName", "longBusinessSummary", "sector")):
+        _INFO_CACHE[ticker] = (now, fresh)
+        return fresh
+
+    # Otherwise return cached if we have any (even if stale)
+    if cached:
+        ts, data = cached
+        return data
+
+    return fresh or {}
+
 FRED_API_KEY = os.getenv("FRED_API_KEY", "")
 SEC_USER_AGENT = os.getenv("SEC_USER_AGENT", "Stock Research Lite contact@example.com")
 ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
@@ -149,11 +179,9 @@ def snapshot(ticker):
     warnings = []
     try:
         t = yf.Ticker(ticker, session=YF_SESSION) if YF_SESSION else yf.Ticker(ticker)
-        info = {}
-        try:
-            info = t.info or {}
-        except Exception as e:
-            warnings.append(f"info: {e}")
+        info = get_cached_info(ticker, t)
+        if not info:
+            warnings.append("info: rate-limited and no cache available")
 
         # fast_info is a lighter endpoint that's less rate-limited.
         # Use it to fill in price/market cap if info() failed.
@@ -257,6 +285,38 @@ def snapshot(ticker):
         ]
         stats = {k: safe_num(info.get(k)) if not isinstance(info.get(k), str) else info.get(k) for k in keys}
 
+        # If Yahoo gave us no name/description, fall back to SEC EDGAR data
+        if not stats.get("longName") or not stats.get("longBusinessSummary"):
+            try:
+                m = _edgar_ticker_map().get(ticker)
+                if m:
+                    cik = m["cik"]
+                    sec_url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+                    sec_resp = requests.get(sec_url, headers={"User-Agent": SEC_USER_AGENT}, timeout=8)
+                    if sec_resp.ok:
+                        sec_data = sec_resp.json()
+                        if not stats.get("longName"):
+                            stats["longName"] = sec_data.get("name") or m.get("title")
+                        if not stats.get("longBusinessSummary"):
+                            sic_desc = sec_data.get("sicDescription")
+                            former_names = [n.get("name") for n in (sec_data.get("formerNames") or [])]
+                            addr = (sec_data.get("addresses") or {}).get("business") or {}
+                            parts = []
+                            if sic_desc:
+                                parts.append(f"Industry: {sic_desc}.")
+                            if former_names:
+                                parts.append(f"Formerly known as: {', '.join(former_names)}.")
+                            if addr.get("city") and addr.get("stateOrCountry"):
+                                parts.append(f"Headquartered in {addr['city']}, {addr['stateOrCountry']}.")
+                            if sec_data.get("exchanges"):
+                                parts.append(f"Listed on: {', '.join(sec_data['exchanges'])}.")
+                            if parts:
+                                stats["longBusinessSummary"] = " ".join(parts) + " (Description from SEC EDGAR; Yahoo's full business summary was unavailable.)"
+                        if not stats.get("sector") and sec_data.get("sicDescription"):
+                            stats["sector"] = sec_data["sicDescription"]
+            except Exception as e:
+                warnings.append(f"sec_fallback: {e}")
+
         return jsonify({"ticker": ticker, "stats": stats, "history": history, "warnings": warnings})
     except Exception as e:
         return jsonify({"error": str(e), "ticker": ticker, "stats": {}, "history": []}), 200
@@ -336,10 +396,7 @@ def financials(ticker):
             bs = t.balance_sheet
             cf = t.cashflow
 
-        try:
-            info = t.info or {}
-        except Exception:
-            info = {}
+        info = get_cached_info(ticker, t)
 
         # Try fast_info for price + market cap (less rate-limited)
         try:
