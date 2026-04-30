@@ -84,11 +84,40 @@ def snapshot(ticker):
     warnings = []
     try:
         t = yf.Ticker(ticker, session=YF_SESSION) if YF_SESSION else yf.Ticker(ticker)
+        info = {}
         try:
             info = t.info or {}
         except Exception as e:
-            info = {}
             warnings.append(f"info: {e}")
+
+        # fast_info is a lighter endpoint that's less rate-limited.
+        # Use it to fill in price/market cap if info() failed.
+        try:
+            fi = t.fast_info
+            if fi is not None:
+                fast_map = {
+                    "currentPrice": getattr(fi, "last_price", None),
+                    "previousClose": getattr(fi, "previous_close", None),
+                    "open": getattr(fi, "open", None),
+                    "dayHigh": getattr(fi, "day_high", None),
+                    "dayLow": getattr(fi, "day_low", None),
+                    "fiftyTwoWeekHigh": getattr(fi, "year_high", None),
+                    "fiftyTwoWeekLow": getattr(fi, "year_low", None),
+                    "fiftyDayAverage": getattr(fi, "fifty_day_average", None),
+                    "twoHundredDayAverage": getattr(fi, "two_hundred_day_average", None),
+                    "marketCap": getattr(fi, "market_cap", None),
+                    "sharesOutstanding": getattr(fi, "shares", None),
+                    "regularMarketVolume": getattr(fi, "last_volume", None),
+                    "averageVolume": getattr(fi, "ten_day_average_volume", None),
+                    "currency": getattr(fi, "currency", None),
+                    "exchange": getattr(fi, "exchange", None),
+                }
+                for k, v in fast_map.items():
+                    if info.get(k) is None and v is not None:
+                        info[k] = v
+        except Exception as e:
+            warnings.append(f"fast_info: {e}")
+
         history = []
         try:
             hist = t.history(period="2y", interval="1d", auto_adjust=False)
@@ -104,6 +133,12 @@ def snapshot(ticker):
                     })
         except Exception as e:
             warnings.append(f"history: {e}")
+
+        # If we got history but no price, derive it from the most recent close.
+        if history and info.get("currentPrice") is None:
+            info["currentPrice"] = history[-1].get("close")
+        if history and info.get("previousClose") is None and len(history) > 1:
+            info["previousClose"] = history[-2].get("close")
 
         keys = [
             "longName", "shortName", "symbol", "sector", "industry", "exchange",
